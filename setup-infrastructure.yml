@@ -14,14 +14,13 @@ Mappings:
     PrivateTwo:
       CIDR: '10.0.3.0/24'
 Resources:
-  # VPC
   VPC:
     Type: AWS::EC2::VPC
     Properties:
       EnableDnsSupport: true
       EnableDnsHostnames: true
       CidrBlock: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
-  # Two public subnets, where containers can have public IP addresses
+
   PublicSubnetOne:
     Type: AWS::EC2::Subnet
     Properties:
@@ -41,9 +40,6 @@ Resources:
       CidrBlock: !FindInMap ['SubnetConfig', 'PublicTwo', 'CIDR']
       MapPublicIpOnLaunch: true
 
-  # Two private subnets where containers will only have private
-  # IP addresses, and will only be reachable by other members of the
-  # VPC
   PrivateSubnetOne:
     Type: AWS::EC2::Subnet
     Properties:
@@ -89,11 +85,6 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnetTwo
       RouteTableId: !Ref PublicRouteTable
-
-  # Setup networking resources for the private subnets. Containers
-  # in these subnets have only private IP addresses, and must use a NAT
-  # gateway to talk to the internet. We launch two NAT gateways, one for
-  # each private subnet.
 
   NatGatewayOneAttachment:
     Type: AWS::EC2::EIP
@@ -178,7 +169,6 @@ Resources:
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
-      Name: !Join ['-', [!Ref 'AWS::StackName', 'drop-1']]
       Port: 80
       Protocol: HTTP
       UnhealthyThresholdCount: 2
@@ -194,62 +184,8 @@ Resources:
       LoadBalancerArn: !Ref 'PublicLoadBalancer'
       Port: 80
       Protocol: HTTP
-  # An internal load balancer, this would be used for a service that is not
-  # directly accessible to the public, but instead should only receive traffic
-  # from your other services.
-  PrivateLoadBalancerSG:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Access to the internal load balancer
-      VpcId: !Ref 'VPC'
-  PrivateLoadBalancerIngressFromECS:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      Description: Only accept traffic from a container in the fargate container security group
-      GroupId: !Ref 'PrivateLoadBalancerSG'
-      IpProtocol: -1
-      SourceSecurityGroupId: !Ref 'ContainerSecurityGroup'
-  PrivateLoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Scheme: internal
-      LoadBalancerAttributes:
-      - Key: idle_timeout.timeout_seconds
-        Value: '30'
-      Subnets:
-        # This load balancer is put into the private subnet, so that there is no
-        # route for the public to even be able to access the private load balancer.
-        - !Ref PrivateSubnetOne
-        - !Ref PrivateSubnetTwo
-      SecurityGroups: [!Ref 'PrivateLoadBalancerSG']
-  # This dummy target group is used to setup the ALB to just drop traffic
-  # initially, before any real service target groups have been added.
-  DummyTargetGroupPrivate:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      HealthCheckIntervalSeconds: 6
-      HealthCheckPath: /
-      HealthCheckProtocol: HTTP
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 2
-      Name: !Join ['-', [!Ref 'AWS::StackName', 'drop-2']]
-      Port: 80
-      Protocol: HTTP
-      UnhealthyThresholdCount: 2
-      VpcId: !Ref 'VPC'
-  PrivateLoadBalancerListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    DependsOn:
-      - PrivateLoadBalancer
-    Properties:
-      DefaultActions:
-        - TargetGroupArn: !Ref 'DummyTargetGroupPrivate'
-          Type: 'forward'
-      LoadBalancerArn: !Ref 'PrivateLoadBalancer'
-      Port: 80
-      Protocol: HTTP
 
-  ListenerRule:
+  ListenerRule2:
     Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
     Properties:
       Actions:
@@ -268,43 +204,72 @@ Resources:
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: 'ecs-cloudformation-fargate'
+      ClusterName: 'enhanced-architecture-fargate'
   ContainerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Access to the Fargate containers
+      GroupDescription: Access to the containers
       VpcId: !Ref 'VPC'
-  EcsSecurityGroupIngressFromPublicALB:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      Description: Ingress from the public ALB
-      GroupId: !Ref 'ContainerSecurityGroup'
-      IpProtocol: -1
-      SourceSecurityGroupId: !Ref 'PublicLoadBalancerSG'
-  EcsSecurityGroupIngressFromPrivateALB:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      Description: Ingress from the private ALB
-      GroupId: !Ref 'ContainerSecurityGroup'
-      IpProtocol: -1
-      SourceSecurityGroupId: !Ref 'PrivateLoadBalancerSG'
-  EcsSecurityGroupIngressFromSelf:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      Description: Ingress from other containers in the same security group
-      GroupId: !Ref 'ContainerSecurityGroup'
-      IpProtocol: -1
-      SourceSecurityGroupId: !Ref 'ContainerSecurityGroup'
-      # SecurityGroupIngress:
-      #   - IpProtocol: tcp
-      #     FromPort: 0
-      #     ToPort: 65535
-      #     SourceSecurityGroupId: !Ref 'PublicLoadBalancerSG'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref 'PublicLoadBalancerSG'
+
+  #IAM 
   
-  # This is an IAM role which authorizes ECS to manage resources on your
-  # account on your behalf, such as updating your load balancer with the
-  # details of where your containers are, so that traffic can reach your
-  # containers.
+  AutoscalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [application-autoscaling.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: service-autoscaling
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - 'application-autoscaling:*'
+              - 'cloudwatch:DescribeAlarms'
+              - 'cloudwatch:PutMetricAlarm'
+              - 'ecs:DescribeServices'
+              - 'ecs:UpdateService'
+            Resource: '*'
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - 'ecs:CreateCluster'
+              - 'ecs:DeregisterContainerInstance'
+              - 'ecs:DiscoverPollEndpoint'
+              - 'ecs:Poll'
+              - 'ecs:RegisterContainerInstance'
+              - 'ecs:StartTelemetrySession'
+              - 'ecs:Submit*'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'ecr:GetAuthorizationToken'
+              - 'ecr:BatchGetImage'
+              - 'ecr:GetDownloadUrlForLayer'
+            Resource: '*'
 
   ECSRole:
     Type: AWS::IAM::Role
@@ -340,8 +305,7 @@ Resources:
               - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
               - 'elasticloadbalancing:RegisterTargets'
             Resource: '*'
-
-  # This is a role which is used by the ECS tasks themselves.
+  
   ECSTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -363,12 +327,10 @@ Resources:
                 - 'ecr:BatchCheckLayerAvailability'
                 - 'ecr:GetDownloadUrlForLayer'
                 - 'ecr:BatchGetImage'
-
                 # Allow the ECS tasks to upload logs to CloudWatch
                 - 'logs:CreateLogStream'
                 - 'logs:PutLogEvents'
-              Resource: '*'
-
+              Resource: '*'  
 ######################################
 Outputs:
   VpcId:
