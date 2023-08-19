@@ -3,12 +3,19 @@ Description: Deploy a service on AWS Fargate, hosted in a private subnet, but ac
 Parameters:
   EnvironmentName:
     Type: String
-    Default: ecs-cloudformation
+    Default: mystack
     Description: The name of the environment to add this service to
   ServiceName:
     Type: String
-    Default: nginx
+    # Default: nginx
     Description: A name for the service
+  HealthCheckIntervalSeconds:
+    Type: Number
+    Default: 5
+  HealthCheckPath:
+    Type: String
+    Default: /
+    Description: Path to perform the healthcheck on each instance.
   ImageUrl:
     Type: String
     Default: nginx
@@ -69,8 +76,7 @@ Resources:
       NetworkMode: awsvpc
       RequiresCompatibilities:
         - FARGATE
-      ExecutionRoleArn:
-        Fn::ImportValue: !Sub ${EnvironmentName}:ECSTaskExecutionRole
+      ExecutionRoleArn: !ImportValue ECSTaskExecutionRole
       TaskRoleArn:
         Fn::If:
           - 'HasCustomRole'
@@ -98,8 +104,7 @@ Resources:
     DependsOn: LoadBalancerRule
     Properties:
       ServiceName: !Ref 'ServiceName'
-      Cluster:
-        Fn::ImportValue: !Sub ${EnvironmentName}:ClusterName
+      Cluster: !ImportValue ECSCluster
       LaunchType: FARGATE
       DeploymentConfiguration:
         MaximumPercent: 200
@@ -109,10 +114,10 @@ Resources:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
           SecurityGroups:
-            - Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
+            - !ImportValue ContainerSecurityGroup
           Subnets:
-            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetOne
-            - Fn::ImportValue: !Sub ${EnvironmentName}:PrivateSubnetTwo
+            - !ImportValue PrivateSubnetOne
+            - !ImportValue PrivateSubnetTwo
       TaskDefinition: !Ref 'TaskDefinition'
       LoadBalancers:
         - ContainerName: !Ref 'ServiceName'
@@ -127,8 +132,8 @@ Resources:
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      HealthCheckIntervalSeconds: 6
-      HealthCheckPath: /
+      HealthCheckIntervalSeconds: !Ref 'HealthCheckIntervalSeconds'
+      HealthCheckPath: !Ref 'HealthCheckPath'
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -137,8 +142,7 @@ Resources:
       Port: !Ref 'ContainerPort'
       Protocol: HTTP
       UnhealthyThresholdCount: 2
-      VpcId:
-        Fn::ImportValue: !Sub ${EnvironmentName}:VpcId
+      VpcId: !ImportValue VpcId
 
   # Create a rule on the load balancer for routing traffic to the target group
   LoadBalancerRule:
@@ -150,6 +154,5 @@ Resources:
       Conditions:
         - Field: path-pattern
           Values: [!Ref 'Path']
-      ListenerArn:
-        Fn::ImportValue: !Sub ${EnvironmentName}:PublicListener
+      ListenerArn: !ImportValue PublicLoadBalancerListener
       Priority: !Ref 'Priority'
